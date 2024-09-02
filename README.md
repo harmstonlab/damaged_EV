@@ -1,8 +1,6 @@
-# damagedmuscle
+# Differences in miRNA cargoes of EVs secreted from normal and damaged muscle
 
-
-
-Analysis code for the damaged muscle exosomes project, in collaboration with Hongwen's lab.
+Sarcopenic muscles exhibit reduced EV secretion and altered EV cargoes, promoting cancer progression. miRNA sequencing of C2C12 myotubes with and without hydrogen peroxide treatment identified miR-7a-5p, a tumor-suppressor microRNA highly enriched in healthy muscle EVs but diminished in damaged muscle EVs. 
 
 # Quick navigation
 * [notebooks](notebooks): Main files containing analysis code. Start here. 
