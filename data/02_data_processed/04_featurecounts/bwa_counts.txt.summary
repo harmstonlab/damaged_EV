@@ -1,0 +1,15 @@
+Status	/home/qianhui/damagedmuscle_project/data/02_data_processed/03_bwa/damaged_muscle_exosome_1_sorted.bam	/home/qianhui/damagedmuscle_project/data/02_data_processed/03_bwa/damaged_muscle_exosome_2_sorted.bam	/home/qianhui/damagedmuscle_project/data/02_data_processed/03_bwa/muscle_exosome_1_sorted.bam	/home/qianhui/damagedmuscle_project/data/02_data_processed/03_bwa/muscle_exosome_2_sorted.bam
+Assigned	6901394	7350345	4577668	7638663
+Unassigned_Unmapped	1673410	1564508	1018240	1272528
+Unassigned_Read_Type	0	0	0	0
+Unassigned_Singleton	0	0	0	0
+Unassigned_MappingQuality	0	0	0	0
+Unassigned_Chimera	0	0	0	0
+Unassigned_FragmentLength	0	0	0	0
+Unassigned_Duplicate	0	0	0	0
+Unassigned_MultiMapping	0	0	0	0
+Unassigned_Secondary	0	0	0	0
+Unassigned_NonSplit	0	0	0	0
+Unassigned_NoFeatures	19011267	18905412	23753141	19211198
+Unassigned_Overlapping_Length	0	0	0	0
+Unassigned_Ambiguity	307420	221581	149658	180944

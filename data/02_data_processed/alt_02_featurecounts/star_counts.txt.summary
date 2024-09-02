@@ -1,0 +1,15 @@
+Status	/home/qianhui/damagedmuscle_project/data/02_data_processed/alt_01_STAR/damaged_muscle_exosome_1Aligned.sortedByCoord.out.bam	/home/qianhui/damagedmuscle_project/data/02_data_processed/alt_01_STAR/damaged_muscle_exosome_2Aligned.sortedByCoord.out.bam	/home/qianhui/damagedmuscle_project/data/02_data_processed/alt_01_STAR/muscle_exosome_1Aligned.sortedByCoord.out.bam	/home/qianhui/damagedmuscle_project/data/02_data_processed/alt_01_STAR/muscle_exosome_2Aligned.sortedByCoord.out.bam
+Assigned	4984226	5138149	2062738	4150271
+Unassigned_Unmapped	0	0	0	0
+Unassigned_Read_Type	0	0	0	0
+Unassigned_Singleton	0	0	0	0
+Unassigned_MappingQuality	0	0	0	0
+Unassigned_Chimera	0	0	0	0
+Unassigned_FragmentLength	0	0	0	0
+Unassigned_Duplicate	0	0	0	0
+Unassigned_MultiMapping	50863555	50732891	32220003	41491764
+Unassigned_Secondary	0	0	0	0
+Unassigned_NonSplit	0	0	0	0
+Unassigned_NoFeatures	5254730	4887624	14332441	9190280
+Unassigned_Overlapping_Length	0	0	0	0
+Unassigned_Ambiguity	6021	7041	4487	7102

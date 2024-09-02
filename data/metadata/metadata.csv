@@ -1,0 +1,5 @@
+﻿sample_id,condition,label,batch
+muscle_exosome_1,control,control_1,1
+muscle_exosome_2,control,control_2,2
+damaged_muscle_exosome_1,damaged,damaged_1,1
+damaged_muscle_exosome_2,damaged,damaged_2,2

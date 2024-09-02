@@ -1,0 +1,95 @@
+This is cutadapt 2.4 with Python 3.4.10
+Command line parameters: -g XGAACGACATGGCTACGATCCGACTT -a AGTCGGAGGCCAAGCGGTCTTAGGAAGACAAX -o /home/qianhui/damagedmuscle_project/data/02_data_processed/01_cutadapt/damaged_muscle_exosome_2_trimmed.fq.gz /home/qianhui/damagedmuscle_project/data/01_data_raw/damaged_muscle_exosome_2.fq.gz --info-file /home/qianhui/damagedmuscle_project/data/02_data_processed/01_cutadapt/damaged_muscle_exosome_2_info_file.tsv
+Processing reads on 1 core in single-end mode ...
+Finished in 766.12 s (27 us/read; 2.20 M reads/minute).
+
+=== Summary ===
+
+Total reads processed:              28,041,846
+Reads with adapters:                   734,852 (2.6%)
+Reads written (passing filters):    28,041,846 (100.0%)
+
+Total basepairs processed:   619,015,854 bp
+Total written (filtered):    616,461,041 bp (99.6%)
+
+=== Adapter 1 ===
+
+Sequence: AGTCGGAGGCCAAGCGGTCTTAGGAAGACAA; Type: non-internal 3'; Length: 31; Trimmed: 543990 times.
+
+No. of allowed errors:
+0-9 bp: 0; 10-19 bp: 1; 20-29 bp: 2; 30-31 bp: 3
+
+Bases preceding removed adapters:
+  A: 12.2%
+  C: 22.3%
+  G: 29.8%
+  T: 35.7%
+  none/other: 0.0%
+
+Overview of removed sequences
+length	count	expect	max.err	error counts
+3	409702	438153.8	0	409702
+4	74256	109538.5	0	74256
+5	21683	27384.6	0	21683
+6	27853	6846.2	0	27853
+7	2078	1711.5	0	2078
+8	333	427.9	0	333
+9	1004	107.0	0	935 69
+10	1098	26.7	1	9 1089
+11	4551	6.7	1	8 4543
+12	515	1.7	1	56 459
+13	16	0.4	1	1 15
+14	35	0.1	1	7 28
+15	272	0.0	1	212 60
+16	46	0.0	1	42 4
+17	77	0.0	1	67 10
+18	16	0.0	1	14 1 1
+19	10	0.0	1	9 0 1
+20	55	0.0	2	24 21 10
+21	8	0.0	2	1 2 5
+22	9	0.0	2	2 5 2
+23	32	0.0	2	12 0 20
+24	69	0.0	2	15 39 15
+25	1	0.0	2	0 0 1
+26	4	0.0	2	0 1 3
+27	3	0.0	2	0 0 0 3
+28	25	0.0	2	0 3 18 4
+29	147	0.0	2	0 124 21 2
+30	5	0.0	3	0 3 2
+31	36	0.0	3	0 24 10 2
+32	45	0.0	3	0 0 1 44
+33	1	0.0	3	0 0 0 1
+34	5	0.0	3	0 0 0 5
+
+
+=== Adapter 2 ===
+
+Sequence: GAACGACATGGCTACGATCCGACTT; Type: non-internal 5'; Length: 25; Trimmed: 190862 times.
+
+No. of allowed errors:
+0-9 bp: 0; 10-19 bp: 1; 20-25 bp: 2
+
+Overview of removed sequences
+length	count	expect	max.err	error counts
+3	153432	438153.8	0	153432
+4	28901	109538.5	0	28901
+5	4188	27384.6	0	4188
+6	543	6846.2	0	543
+7	498	1711.5	0	498
+8	185	427.9	0	185
+9	446	107.0	0	413 33
+10	527	26.7	1	431 96
+11	910	6.7	1	673 237
+12	1016	1.7	1	930 86
+13	28	0.4	1	9 19
+14	31	0.1	1	25 6
+15	3	0.0	1	3
+16	5	0.0	1	4 1
+17	2	0.0	1	1 1
+18	11	0.0	1	3 7 1
+19	74	0.0	1	41 32 1
+20	10	0.0	2	1 4 5
+21	17	0.0	2	0 6 11
+22	33	0.0	2	0 0 33
+23	1	0.0	2	0 1
+25	1	0.0	2	0 1

@@ -1,0 +1,1521 @@
+---
+title: "02_clustering"
+format: gfm
+code-fold: true
+jupyter:
+  jupytext:
+    formats: ipynb,Rmd
+    text_representation:
+      extension: .Rmd
+      format_name: rmarkdown
+      format_version: '1.2'
+      jupytext_version: 1.14.0
+  kernelspec:
+    display_name: R
+    language: R
+    name: ir
+---
+
+# 02_clustering
+
+In this notebook, we run clustering and differential expression analysis for various miRNAs. 
+
+Besides our usual volcano plots and MA plots, we also attempt to figure out what each cluster of miRNAs are regulating. 
+
+We first split the miRNAs into two clusters - those that go up in damaged exosomes, and those that go down in damaged exosomes. As we can't run enrichments on miRNAs, we first use a database to associate miRNAs with predicted target genes, before running GO and KEGG on the target genes. 
+
+In this notebook, we try 3 such miRNA-mRNA databases: 
+- TargetScan (computational prediction of targets)
+- mirDB (computational prediction of targets)
+- mirTarBase( experimentally validated interactions)
+
+
+# Setup
+
+```{r}
+# Load libraries
+
+suppressPackageStartupMessages({
+    library(targetscan.Mm.eg.db)
+    library(DESeq2)
+
+    library(DT)
+    library(pheatmap)
+    library(clusterProfiler)
+    library(ComplexHeatmap)
+    library(circlize)
+    library(RColorBrewer)
+    library("org.Mm.eg.db")
+    
+    library(readxl)
+    # General tidying up
+    library(janitor)
+    library(ggrepel)
+    library(tidyverse)
+})
+```
+
+```{r}
+# Load data
+data_mat <- readRDS("../../output/01_data_mat.RDS")
+data_mat_nonzero <- readRDS("../../output/01_data_mat_nonzero.RDS")
+metadata <- readRDS("../../output/01_metadata.RDS")
+
+#mmu.gff = read.csv("/Users/qh_tan/qianhui/damagedmuscle/output/mmu_gff.csv", header = TRUE, sep = ",")
+mmu.gff <- read.csv("../../output/mmu_gff.csv")
+
+```
+
+```{r}
+ensembl_genes <- readRDS("../../output/00_ensembl_genes.RDS")
+```
+
+```{r}
+# Initialize the starting seed
+set.seed(1)
+```
+
+## Functions
+
+```{r}
+plotEGO = function(clust_target_genes,
+                   universe = universe, 
+                   ont = "BP", 
+                   title = "title", 
+                   font_size = 14){
+    
+  cl_target_ego = enrichGO(gene = clust_target_genes, 
+                        OrgDb = org.Mm.eg.db,
+                        keyType = 'ENSEMBL', 
+                        ont = ont, 
+                        pAdjustMethod = "BH", 
+                        pvalueCutoff = 0.05,
+                        qvalueCutoff = 0.05,
+                        readable = TRUE)
+    
+   # If no GO terms found, return warning message and a tibble with NA
+  if(nrow(data.frame(cl_target_ego)) == 0) {
+      warning(paste0("No GO enrichment found. Returning a NA tibble."
+      ))
+      return(tibble(`Description` = "NA"))
+  } else {
+      print(dotplot(cl_target_ego,
+          title = title, 
+          font.size = font_size))
+  
+      return(as_tibble(cl_target_ego))
+  }
+    
+  
+}
+```
+
+```{r}
+# Takes a character vector of entrez gene IDs as input, runs KEGG enrichment.
+# Prints out a kegg dotplot and saves a readable kegg enrichment as a data frame. 
+
+enrich_kegg_readable <- function(target_genes_entrez, title = "title"){
+    # Run KEGG enrichment
+    ekegg = clusterProfiler::enrichKEGG(target_genes_entrez,
+                                       organism = "mmu",
+                                       keyType = "ncbi-geneid")
+    
+    # Print the kegg dotplot
+    print(dotplot(ekegg, title = title))
+    
+    # Convert entrez to gene symbols
+    ekegg = DOSE::setReadable(ekegg, OrgDb = "org.Mm.eg.db", keyType = "ENTREZID")
+    
+    # Return the result as a data frame
+    return(as.data.frame(ekegg))
+    
+}
+```
+
+```{r}
+# Plots a nice heatmap
+# Run: make_heatmap(rld_z_plot, names(kmeans_cl[[1]]), title = "Cluster 1")
+
+make_heatmap <- function(count_matrix, 
+                        genes,
+                        show_row_names = TRUE,
+                        rownames_fontsize = 12,
+                        title = "title"){
+    
+    
+    # Heatmap according to clusters
+    heatmap_cl = ComplexHeatmap::Heatmap(
+                  #matrix = rld_z_plot[names(kmeans_cl[[1]]), ], 
+                  matrix = count_matrix[genes, ],
+                  col = colorRamp2(c(min(count_matrix), 0, max(count_matrix)), 
+                                                 c("mediumblue", "white", 
+                                                   "firebrick2")
+                                               ),
+                  column_title = title,
+                  column_title_side = "top",
+                  name = "z-score",
+        
+                 # Graphic parameters: rows
+                 cluster_rows = TRUE,
+                 row_names_gp =  gpar(fontsize = rownames_fontsize),
+                 row_names_side = "right",
+                 #row_dend_gp = gpar(fontsize = 12),  
+                 #row_dend_width = unit(20, "mm"),
+
+                 clustering_distance_rows = "euclidean", # clust by genes   
+
+                 # Graphic parameters: columns
+                 column_names_gp = gpar(fontsize = 14), 
+                 column_names_side = "bottom",
+                 column_dend_gp = gpar(fontsize = 12),
+                 column_dend_side = "top",
+                 #column_dend_height = unit(10, "mm"),
+
+                 show_column_names = TRUE, 
+                 column_names_rot = 45,
+                 show_row_names = show_row_names,
+
+                 column_order = c("control_1", "control_2", 
+                                 "damaged_1", "damaged_2")
+                 )
+
+    heatmap_cl
+    
+}
+```
+
+## TargetScan wrangling
+
+
+The TargetScan file is really large, and contains annotations for all animals. We filter it such that it only contains mouse annotations: 
+
+<!-- #region -->
+```{r}
+# Only keep the mice targets from targetscan:
+targetscan <- read.delim("../../data/mmu80_Conserved_Site_Context_Scores.txt", header = TRUE, sep = "\t")
+
+mmu_targetscan <- targetscan  %>% 
+    as_tibble()  %>% 
+    clean_names()  %>% 
+    # Create organism as a separate column, keep only mouse
+    separate(mi_rna, c("organism", NA), remove = FALSE)  %>% 
+    filter(organism == "mmu")  %>% 
+    # Change ENSG001.1 to ENSG001 for enrichGO
+    separate(gene_id, sep = "\\.", into = c("gene_id", NA)) 
+
+rm(targetscan)
+
+write.csv(mmu_targetscan, file = "../../output/02_mmu_targetscan.csv")
+
+```
+<!-- #endregion -->
+
+```{r}
+# Read in file
+mmu_targetscan <- read.csv("../../output/02_mmu_targetscan.csv")
+
+# Create subset where score >= 90
+mmu_targetscan_90 <- mmu_targetscan %>% filter(context_score_percentile >= 90) 
+```
+
+## Interesting miRNAs
+
+For this project, we were also given a list of miRNAs of interest. We add them to a character vector here: 
+
+```{r}
+interesting <- c("mmu-miR-18a-5p", "mmu-miR-1949", "mmu-miR-486b-5p",
+                "mmu-miR-3470a", "mmu-miR-199b-3p", "mmu-miR-301a-5p",
+                "mmu-miR-669l-5p", "mmu-miR-497a-5p", "mmu-miR-7a-5p",
+                "mmu-miR-322-5p", "mmu-miR-652-5p", "mmu-miR-148b-3p",
+                "mmu-miR-297c-5p", "mmu-miR-669b-5p", "mmu-miR-669d-5p",
+                "mmu-miR-669o-5p", "mmu-miR-15b-5p", "mmu-miR-350-5p", 
+                "mmu-miR-7689-3p", "mmu-miR-25-3p", "mmu-miR-709",
+                "mmu-miR-199a-3p")
+
+# Sort in increasing numerical order
+interesting <- interesting[order(interesting)]
+
+interesting
+```
+
+# DESeq differential expression
+
+
+## Create dds
+
+```{r}
+# Check that there are no duplicates
+sum(duplicated(rownames(data_mat_nonzero)))
+```
+
+```{r}
+# Creating the DESeq object
+dds = DESeqDataSetFromMatrix(countData = data_mat, 
+                             colData = metadata,
+                             design = ~ condition)
+
+colnames(dds) = colnames(data_mat)
+
+dds <- estimateSizeFactors(dds)
+dds <- estimateDispersions(dds)
+
+rld <- rlog(dds)
+```
+
+```{r}
+filter = apply(counts(dds, normalized = TRUE), 1, function(x){ mean(x) >= 10 }) 
+dds_filt = dds[filter, ]
+dds_filt = DESeq(dds_filt)
+
+rld_filt = rlog(dds_filt)
+```
+
+```{r}
+dds_filt
+```
+
+## Pairwise wald test
+
+```{r}
+# Find differentially expressed genes
+contrasts = c("condition", "damaged", "control")
+
+dds_res <- results(dds_filt, contrast = contrasts, alpha = 0.05)
+
+dds_res
+```
+
+## Add miRNA info to the main dataframe
+
+```{r}
+#head(mmu.gff)
+```
+
+```{r}
+keep = c("baseMean", "log2FoldChange", "pvalue", "padj")
+
+dds_res_df = as.data.frame(dds_res)
+
+dds_res_df = dds_res_df[, keep]
+dds_res_df$ID = rownames(dds_res_df)
+
+dds_res_tib <- as_tibble(dds_res_df)  %>% 
+                dplyr::select(ID, everything())  %>% 
+                left_join(mmu.gff)  %>% 
+                dplyr::select(ID, Name, baseMean, log2FoldChange, pvalue, padj,
+                              Derivation,
+                             Chromosome, Start, End, Strand)  %>% 
+                arrange(log2FoldChange)
+
+#head(dds_res_tib)
+```
+
+## Volcano plots
+
+```{r}
+dds_res_plot <- dds_res_tib  %>% 
+    mutate(abs_lfc = abs(log2FoldChange))  %>% 
+    arrange(pvalue)   %>% 
+    mutate(rank = rank(pvalue))
+
+# Label the top 10 miRNAs
+dds_res_plot$label <- ifelse(dds_res_plot$rank <= 10, 
+                            dds_res_plot$Name, NA_character_)
+
+dds_res_plot$label <- ifelse(dds_res_plot$Name %in% c("mmu-miR-7a-5p", "mmu-miR-34b-3p", "mmu-miR-15b-5p", "mmu-miR-25-3p"), 
+                            dds_res_plot$Name, NA_character_)
+
+
+```
+
+```{r}
+# Quick look at the results
+#head(dds_res_plot)
+```
+
+```{r}
+write.csv(dds_res_plot, file = "../../output/02_waldtest_results.csv")
+```
+
+```{r}
+# What are the top 10? 
+
+top10 <- dds_res_plot  %>% 
+    dplyr::select(Name, baseMean, log2FoldChange, pvalue, rank)  %>% 
+    slice_head(n = 10)
+
+top10
+```
+
+```{r}
+#| label: fig-vlc
+#| fig-cap: "Volcano plot"
+
+options(repr.plot.height = 8, repr.plot.width = 8)
+
+# Plot volcano plot
+p <- ggplot(dds_res_plot, 
+       aes(x = log2FoldChange, y = -log10(padj), 
+           col = -log10(padj), label = label)) + 
+  geom_point() +
+  geom_text_repel(col = "black", max.overlaps = 50) +
+  geom_vline(xintercept = 0, size = 0.2, linetype = "dashed") +
+  geom_hline(yintercept = 0, size = 0.2, linetype = "dashed") +
+  scale_x_continuous(limits=c(-10, 10)) + 
+  scale_y_continuous(limits=c(0, 55), breaks=c(0, 10, 20, 30, 40, 50, 55)) + 
+  scale_color_gradient2(low = "grey", mid = "grey", high = "red",
+                        midpoint = -log10(0.05)) +
+  labs(title = "Volcano plot", 
+       subtitle = "Damaged exosomes vs normal exosomes") +
+  theme_bw()
+
+p
+```
+
+Where do our interesting miRNAs rank? 
+
+```{r}
+dds_res_plot  %>% 
+    filter(Name %in% interesting)  %>% 
+    dplyr::select(ID, Name, baseMean, log2FoldChange, padj, rank)
+```
+
+## MA plots
+
+```{r}
+#| label: fig-ma
+
+plotMA(dds_res)
+```
+
+This looks okay. 
+
+
+## Visualize significant results
+
+
+We define significant results as those that have padj < 0.1:
+
+```{r}
+# Select significant results
+
+signif_results <- dds_res_tib  %>% 
+                    filter(padj < 0.1)
+```
+
+```{r}
+dim(signif_results)
+```
+
+```{r}
+# Visualize the results
+
+rld_signif = assay(rld_filt)[signif_results$ID, ]
+
+rld_z = t(apply(rld_signif, 1, function(x){ (x - mean(x)) / sd(x)}))
+
+
+rld_z_plot <- rld_z
+rownames(rld_z_plot) = dds_res_tib$Name[match(rownames(rld_z_plot), dds_res_tib$ID)]
+
+#head(rld_z_plot)
+```
+
+```{r}
+#| label: fig-wss
+#| fig-cap: "WSS plot"
+
+options(repr.plot.height = 4, repr.plot.width = 6)
+
+k.max <- 15
+wss <- sapply(1:k.max,
+ function(k){kmeans(rld_z_plot, k, nstart=100,
+ iter.max = 20 )$tot.withinss})
+
+plot(1:k.max, wss,
+ type="b", pch = 19, frame = FALSE,
+ xlab="Number of clusters K",
+ ylab="Total within-clusters sum of squares")
+```
+
+```{r}
+set.seed(2)
+
+nclust = 2
+
+results.coef.kmeans = kmeans(rld_z_plot, nclust, iter.max=50)
+
+# Loop to obtain genes for each cluster
+kmeans_cl = c()
+
+for (i in 1:nclust){
+  kmeans_cl[[i]] = results.coef.kmeans$cluster[
+    which(results.coef.kmeans$cluster == i)
+    ]
+}
+
+# Unlist each cluster so it is now accessible. 
+kmeans_cl_unlisted = unlist(kmeans_cl)
+
+breaksList = seq(-3, 3, length.out = 29)
+
+cs = results.coef.kmeans$cluster
+cs <- factor(cs, levels = c(2, 1))
+
+
+
+z.toplot = rld_z_plot[order(cs), c("control_1", "control_2",
+                             "damaged_1", "damaged_2")]
+
+```
+
+```{r}
+#| label: fig-pheatmap
+#| fig-cap: "Pheatmap"
+
+options(repr.plot.height = 8, repr.plot.width = 6)
+
+color = c(colorRampPalette(c("mediumblue", "white"))(14),
+colorRampPalette(c("white", "firebrick2"))(14))
+
+heat.map <- pheatmap(z.toplot, cluster_col=FALSE,
+                     breaks=breaksList, cluster_rows=FALSE,
+                     show_rownames=FALSE,color = color,
+                     fontsize_row = 3, legend=TRUE,
+                     border_color = NA, 
+                     annotation_row = data.frame(cluster = cs))
+
+heat.map
+```
+
+We try using hierarchical clustering: 
+
+```{r}
+#| label: fig-heatmap-all
+#| fig-cap: "Heatmap, all"
+
+options(repr.plot.height = 8, repr.plot.width = 6)
+
+# Heatmap according to clusters
+heatmap_cl = ComplexHeatmap::Heatmap(
+              matrix = rld_z_plot[names(kmeans_cl_unlisted), ], 
+              col = colorRamp2(c(min(rld_z_plot), 0, max(rld_z_plot)), 
+                                             c("mediumblue", "white", 
+                                               "firebrick2")
+                                           ),
+              column_title = "Heatmap of differentially expressed genes",
+              column_title_side = "top",
+              name = "z-score",
+             # Graphic parameters: rows
+             #cluster_rows = FALSE,
+             #row_names_gp =  gpar(fontsize = 11),
+             row_names_side = "right",
+             #row_dend_gp = gpar(fontsize = 12),  
+             #row_dend_width = unit(20, "mm"),
+             
+             clustering_distance_rows = "euclidean", # clust by genes   
+             
+             # Graphic parameters: columns
+             column_names_gp = gpar(fontsize = 14), 
+             column_names_side = "bottom",
+             column_dend_gp = gpar(fontsize = 12),
+             column_dend_side = "top",
+             #column_dend_height = unit(10, "mm"),
+             
+             show_column_names = TRUE, 
+             column_names_rot = 45,
+             show_row_names = FALSE,
+             )
+                     
+
+heatmap_cl
+```
+
+# TargetScan
+
+
+## Cluster 1 - TargetScan
+
+
+### Heatmap
+
+
+Let's look at genes in cluster 1:
+
+```{r}
+#| label: fig-cl1-heatmap
+#| fig-cap: "Heatmap, cluster 1"
+
+options(repr.plot.height = 15, repr.plot.width = 8)
+
+make_heatmap(count_matrix = rld_z_plot, 
+            genes = names(kmeans_cl[[1]]),
+            title = "Cluster 1, TargetScan")
+```
+
+### GO enrichment - TargetScan, cluster 1
+
+
+Cluster 1 shows miRNAs that are reduced in damaged exosomes. In this section, we look at TargetScan annotations and see if we can find out what they target. 
+
+```{r}
+mir_cl1 <- names(kmeans_cl[[1]])
+
+#mir_cl1
+```
+
+```{r}
+# How many percent of miRNAs have TargetScan annotations?
+length(mir_cl1)/length(mir_cl1 %in% mmu_targetscan_90$mi_rna) * 100
+```
+
+Okay, they're all in there. Let's check the number of targets each miRNA has: 
+
+```{r}
+targetscan_ntargets <- mmu_targetscan_90  %>% 
+    filter(mi_rna %in% mir_cl1)  %>% 
+    dplyr::select(mi_rna, gene_symbol)  %>% 
+    distinct() %>% 
+    group_by(mi_rna)  %>% 
+    summarize(n = n())  %>% 
+    arrange(desc(n))
+
+summary(targetscan_ntargets$n)
+```
+
+That is a pretty wide range. We have some miRNAs targeting almost 800 genes, while some target only 5. 
+
+
+Let's run a gene ontology analysis on the target genes: 
+
+```{r}
+cl1_target_genes <- mmu_targetscan_90  %>% 
+    filter(mi_rna %in% mir_cl1)  %>% 
+    distinct(gene_id)  %>% 
+    pull()
+
+length(cl1_target_genes)
+```
+
+```{r}
+#| cache: true
+#| label: fig-cl1-ego
+#| fig-cap: "GO enrichment, cluster 1"
+
+
+options(repr.plot.height = 6, repr.plot.width = 10)
+
+cl1_ego <- plotEGO(cl1_target_genes, 
+                   universe = mmu_targetscan_90$gene_id, 
+                   title = "Cluster 1 GO, TargetScan")
+```
+
+```{r}
+head(cl1_ego)
+```
+
+```{r}
+# How many enrichments do we have? 
+
+dim(cl1_ego)
+```
+
+```{r}
+# export it to a csv file
+
+write.csv(cl1_ego, file = "../../output/02_cl1_ego.csv")
+```
+
+Yikes. That is pretty much everything.  
+
+```{r}
+#cl1_ego  %>% 
+#    dplyr::select(Description, geneID)  %>% 
+#    pull(Description)  %>% 
+#    str_subset("cell cycle")
+```
+
+Examining individual genes: 
+
+```{r}
+# This does not look good on github - will comment it out first
+
+#cl1_ego  %>% 
+#    filter(Description == "Wnt signaling pathway")  %>% 
+#    pull(geneID)  %>% 
+#    strsplit("/")
+```
+
+```{r}
+#cl1_ego  %>% 
+#    filter(Description == "Ras protein signal transduction")  %>% 
+#    pull(geneID)  %>% 
+#    strsplit("/")
+```
+
+###  KEGG enrichment - TargetScan, cluster 1
+
+```{r}
+cl1_target_genes_entrez <- na.omit(ensembl_genes[ensembl_genes$gene_id %in% cl1_target_genes, ]$entrezgene_id)
+
+head(cl1_target_genes_entrez)
+length(cl1_target_genes_entrez)
+```
+
+```{r}
+#| cache: true
+#| label: fig-cl1-kegg
+#| fig-cap: "KEGG enrichment, cluster 1"
+# Perform KEGG enrichment
+
+cl1_ekegg = enrich_kegg_readable(cl1_target_genes_entrez,
+                                title = "Cluster 1 KEGG, TargetScan")
+```
+
+```{r}
+head(cl1_ekegg)
+```
+
+```{r}
+nrow(cl1_ekegg)
+```
+
+```{r}
+write.csv(cl1_ekegg, file = "../../output/02_cl1_ekegg.csv")
+```
+
+## Cluster 2 - TargetScan
+
+
+### Heatmap
+
+```{r}
+#| label: fig-cl2-heatmap
+#| fig-cap: "Heatmap, cluster 2"
+
+options(repr.plot.height = 10, repr.plot.width = 8)
+
+make_heatmap(rld_z_plot, names(kmeans_cl[[2]]), 
+             title = "Cluster 2, TargetScan")
+```
+
+Cluster 2 contains miRNAs that are upregulated in damaged exosomes. 
+
+
+### GO enrichment - TargetScan, cluster 2
+
+```{r}
+mir_cl2 <- names(kmeans_cl[[2]])
+
+#mir_cl2
+```
+
+```{r}
+# How many % of miRNAs have TargetScan annotations? 
+length(mir_cl2)/length(mir_cl2 %in% mmu_targetscan_90$mi_rna)*100
+```
+
+```{r}
+# check number of targets each miRNA has
+cl2_ntargets <- mmu_targetscan_90  %>% 
+    filter(mi_rna %in% mir_cl2)  %>% 
+    dplyr::select(mi_rna, gene_symbol)  %>% 
+    distinct() %>% 
+    group_by(mi_rna)  %>% 
+    summarize(n = n())  %>% 
+    arrange(desc(n))
+
+summary(cl2_ntargets$n)
+```
+
+That is a pretty wide range. We have some miRNAs targeting almost 700 genes, while some target only 1. 
+
+
+Let's run a gene ontology analysis on the target genes: 
+
+```{r}
+cl2_target_genes <- mmu_targetscan_90  %>% 
+    filter(mi_rna %in% mir_cl2)  %>% 
+    distinct(gene_id)  %>% 
+    pull()
+
+length(cl2_target_genes)
+```
+
+```{r}
+#| cache: true
+#| label: fig-cl2-ego
+#| fig-cap: "GO enrichment, cluster 2"
+
+options(repr.plot.height = 6, repr.plot.width = 10)
+
+cl2_ego <- plotEGO(cl2_target_genes, title = "Cluster 2 GO, TargetScan")
+```
+
+```{r}
+dim(cl2_ego)
+```
+
+```{r}
+# export it to a csv file
+
+write.csv(cl2_ego, file = "../../output/02_cl2_ego.csv")
+```
+
+That is still a very substantial number of pathways. 
+
+
+A few of these do keep coming up. Ras signalling and Wnt signalling, in particular. 
+
+We also see cell-substrate adhesion, cell fate commitment etc. 
+
+```{r}
+#cl2_ego  %>% 
+#    filter(Description == "Wnt signaling pathway")  %>% 
+#    pull(geneID)  %>% 
+#    strsplit("/")
+```
+
+```{r}
+#cl2_ego  %>% 
+#    filter(Description == "Ras protein signal transduction")  %>% 
+#    pull(geneID)  %>% 
+#    strsplit("/")
+```
+
+```{r}
+#cl2_ego  %>% 
+#    filter(Description == "transforming growth factor beta receptor signaling pathway")  %>% 
+#    pull(geneID)  %>% 
+#    strsplit("/")
+```
+
+```{r}
+#cl2_ego  %>% 
+#    filter(Description == "muscle cell proliferation")  %>% 
+#    pull(geneID)  %>% 
+#    strsplit("/")
+```
+
+```{r}
+#cl2_ego  %>% 
+#    filter(Description == "cell-substrate adhesion")  %>% 
+#    pull(geneID)  %>% 
+#    strsplit("/")
+```
+
+```{r}
+#cl2_ego  %>% 
+#    filter(Description == "regulation of cell-cell adhesion mediated by cadherin")  %>% 
+#    pull(geneID)  %>% 
+#    strsplit("/")
+```
+
+### KEGG enrichment - TargetScan, cluster 2
+
+```{r}
+# Get the entrez IDs for cluster 2
+
+cl2_target_genes_entrez <- na.omit(ensembl_genes[ensembl_genes$gene_id %in% 
+                                                 cl2_target_genes, ]$entrezgene_id)
+
+#head(cl2_target_genes_entrez)
+length(cl2_target_genes_entrez)
+```
+
+```{r}
+#| cache: true
+#| label: fig-cl2-kegg
+#| fig-cap: "KEGG enrichment, cluster 2"
+
+options(repr.plot.height = 5, repr.plot.width = 6)
+
+cl2_ekegg = enrich_kegg_readable(cl2_target_genes_entrez,
+                                title = "Cluster 2 KEGG, TargetScan")
+```
+
+```{r}
+# How many terms? 
+nrow(as.data.frame(cl2_ekegg))
+
+head(cl2_ekegg)
+```
+
+```{r}
+# export
+
+write.csv(cl2_ekegg, file = "../../output/02_cl2_ekegg.csv")
+```
+
+<!-- #region -->
+# Annotating with mirTarBase 
+
+
+One thing that bothers me about TargetScan is the fact that there are way too many targets for each miRNA, and I don't fully understand the context scores/ weighted context scores at the moment. 
+
+Here, we try a more stringent miRNA-mRNA database called [mirTarBase](https://mirtarbase.cuhk.edu.cn/~miRTarBase/miRTarBase_2022/php/index.php). This is an experimentally validated miRNA-mRNA database that is used in [OmnipathR](https://omnipathdb.org). 
+
+mirTarBase splits into two - the strong predictions are validated via luciferase reporter assay or a Western blot, while the weak annotations are validated via microarray or pSILUC. 
+<!-- #endregion -->
+
+```{r}
+# Read in the data
+mtb_strong <- read_xlsx("../../data/annotations/miRTarBase_SE_WR.xlsx")  %>% 
+                clean_names()
+mtb_weak <- read_xlsx("../../data/annotations/miRTarBase_WE_MP.xlsx") %>% 
+                clean_names()
+```
+
+```{r}
+# Filter and keep only mice
+mmu_mtb_strong <- mtb_strong  %>% 
+    filter(species_mi_rna == "Mus musculus")
+
+mmu_mtb_weak <- mtb_weak %>% 
+    filter(species_mi_rna == "Mus musculus")
+
+mmu_mtb_all <- rbind(mmu_mtb_strong, mmu_mtb_weak)
+
+# Add ensembl id
+
+mmu_mtb_strong$ensembl_gene_id <- ensembl_genes$gene_id[match(mmu_mtb_strong$target_gene_entrez_id, 
+                                                             ensembl_genes$entrezgene_id)]
+```
+
+```{r}
+length(unique(mmu_mtb_strong$mi_rna))
+```
+
+```{r}
+length(unique(mmu_mtb_weak$mi_rna))
+```
+
+```{r}
+length(unique(mmu_mtb_all$mi_rna))
+```
+
+Alright, that's not too many compared to TargetScan. Let's see how many targets each miRNA has: 
+
+```{r}
+mtb_ntargets <- mmu_mtb_strong  %>% 
+    dplyr::select(mi_rna, target_gene)  %>% 
+    distinct()  %>% 
+    group_by(mi_rna)  %>% 
+    summarize(n = n())  %>% 
+    arrange(desc(n))
+
+head(mtb_ntargets)
+```
+
+```{r}
+summary(mtb_ntargets$n)
+```
+
+That already looks so much better! Most miRNAs have a median of 2 targets, which is to be expected. However, there are some miRNAs that have up to 50 unique targets. 
+
+
+## Cluster 1 - mirTarBase
+
+```{r}
+# Percent of miRNAs in cluster 1 that are in mirTarBase
+length(mir_cl1)/length(mir_cl1 %in% mmu_mtb_strong)*100
+```
+
+All miRNAs in cluster 1 are annotated in mirTarBase
+
+```{r}
+# Check the strong target enrichment
+cl1_mtb_targets <- mmu_mtb_strong %>% 
+    filter(mi_rna %in% mir_cl1)  
+
+nrow(cl1_mtb_targets)
+
+#head(cl1_mtb_targets)
+```
+
+```{r}
+#| cache: true
+#| label: fig-cl1-mtb-ego
+#| fig-cap: "GO enrichment, mirTarBase, cluster 1"
+
+
+options(repr.plot.height = 6, repr.plot.width = 10)
+
+cl1_mtb_ego <- plotEGO(cl1_mtb_targets$ensembl_gene_id, 
+                   universe = mmu_mtb_strong$ensembl_gene_id, 
+                   title = "Cluster 1 GO, mirTarBase")
+```
+
+```{r}
+dim(cl1_mtb_ego)
+```
+
+```{r}
+write.csv(as.data.frame(cl1_mtb_ego), file = "../../output/02_cl1_mtb_ego.csv")
+```
+
+```{r}
+#| label: fig-cl1-mtb-kegg
+#| fig-cap: "KEGG enrichment, mirTarBase, cluster 1"
+
+options(repr.plot.width = 6, repr.plot.height = 5)
+cl1_mtb_ekegg = enrich_kegg_readable(cl1_mtb_targets$target_gene_entrez_id,
+                                    title = "Cluster 1 KEGG, mirTarBase")
+```
+
+```{r}
+head(cl1_mtb_ekegg)
+```
+
+```{r}
+dim(cl1_mtb_ekegg)
+```
+
+```{r}
+write.csv(as.data.frame(cl1_mtb_ekegg), file = "../../output/02_cl1_mtb_ekegg.csv")
+```
+
+## Cluster 2 - mirTarBase
+
+```{r}
+cl2_mtb_targets <- mmu_mtb_strong %>% 
+    filter(mi_rna %in% mir_cl2)  
+
+nrow(cl2_mtb_targets)
+
+#head(cl2_mtb_targets)
+```
+
+```{r}
+#| cache: true
+#| label: fig-cl2-mtb-ego
+#| fig-cap: "GO enrichment, mirTarBase, cluster 2"
+
+
+options(repr.plot.height = 6, repr.plot.width = 10)
+
+cl2_mtb_ego <- plotEGO(cl2_mtb_targets$ensembl_gene_id, 
+                   universe = unique(mmu_mtb_strong$ensembl_gene_id), 
+                   title = "Cluster 2 GO, mirTarBase")
+```
+
+```{r}
+dim(cl2_mtb_ego)
+```
+
+I know why there's so many enrichments!!! We're hitting 2 or 3 genes in a pathway... if we can somehow filter this, that would be great. 
+
+I could try filtering by Count? 
+
+```{r}
+tail(cl2_mtb_ego)
+```
+
+```{r}
+summary(cl2_mtb_ego$Count)
+```
+
+```{r}
+cl2_mtb_ego_filt <- cl2_mtb_ego  %>% 
+    filter(Count > 8)
+
+nrow(cl2_mtb_ego_filt)
+```
+
+We're still getting 580.....
+
+```{r}
+write.csv(cl2_mtb_ego, file = "../../output/02_cl2_mtb_ego.csv")
+```
+
+```{r}
+#| label: fig-cl2-mtb-ekegg
+#| fig-cap: "KEGG enrichment, mirTarBase, cluster 2"
+
+options(repr.plot.height = 5, repr.plot.width = 6)
+
+cl2_mtb_ekegg = enrich_kegg_readable(cl2_mtb_targets$target_gene_entrez_id,
+                                    title = "Cluster 2 KEGG, mirTarBase")
+```
+
+```{r}
+dim(cl2_mtb_ekegg)
+```
+
+```{r}
+write.csv(as.data.frame(cl2_mtb_ekegg), file = "../../output/02_cl2_mtb_ekegg.csv")
+```
+
+# Annotating with mirDB
+
+We try another miRNA-mRNA resource, mirDB. mirDB only gives a single score.
+
+```{r}
+mirdb <- read_delim(file = "../../data/annotations/mmu_mirdb_ensembl_annotated.txt", 
+                   col_names = TRUE)
+
+#head(mirdb)
+```
+
+From the mirDB website, a prediction score of above 80 is most likely to be an actual match. We subset mirDB to only contain mirdb_scores of 80 and above: 
+
+```{r}
+mirdb_80  <- na.omit(mirdb)  %>% filter(mirdb_score >= 80)
+
+nrow(mirdb_80)/nrow(mirdb) * 100
+```
+
+Okay, that's roughly 25% of the total annotations. 
+
+
+## Cluster 1 - mirDB
+
+
+Percent of mirs in cluster 1 annotated in mirdb? 
+
+```{r}
+length(mir_cl1)/length(mir_cl1 %in% mirdb_80$mir_name) * 100
+```
+
+Brilliant - they're all there!
+
+```{r}
+# Check number of targets for each miRNA
+
+mirdb_ntargets <- mirdb_80  %>% 
+    filter(mir_name %in% mir_cl1)  %>% 
+    dplyr::select(mir_name, target_id)  %>% 
+    distinct()  %>% 
+    group_by(mir_name)  %>% 
+    summarize(n = n())  %>% 
+    arrange(desc(n)) 
+
+#head(mirdb_ntargets)
+summary(mirdb_ntargets$n)
+```
+
+That is a lot. Most miRNAs have 116 targets and above, which doesn't seem very ideal.
+
+
+### GO enrichment - mirDB, cluster 1
+
+Run GO enrichment on these targets
+
+```{r}
+cl1_target_genes <- mirdb_80  %>% 
+    filter(mir_name %in% mir_cl1)  %>% 
+    distinct(target_id)  %>% 
+    pull()
+
+length(cl1_target_genes)
+```
+
+```{r}
+# A quick check for miRNAs that target tead1:
+
+tead1 <- "ENSMUSG00000055320"
+
+mir_tead <- mirdb_80  %>% 
+    filter(mir_name %in% mir_cl1)  %>% 
+    filter(target_id == tead1) 
+
+mir_tead
+```
+
+```{r}
+dds_res_plot  %>% 
+    filter(ID %in% mir_tead$mir_id)
+```
+
+```{r}
+#| cache: true
+#| label: fig-mirdb-cl1-ego
+#| fig-cap: "GO enrichment, mirDB, cluster 1"
+
+options(repr.plot.height = 6, repr.plot.width = 10)
+
+mirdb_cl1_ego <- plotEGO(cl1_target_genes, 
+                   universe = mirdb_80$target_id, 
+                   title = "Cluster 1 GO, mirDB")
+```
+
+```{r}
+head(mirdb_cl1_ego)
+```
+
+```{r}
+# How many enrichments do we have? 
+
+dim(mirdb_cl1_ego)
+```
+
+```{r}
+# export it to a csv file
+
+write.csv(mirdb_cl1_ego, file = "../../output/02_mirdb_cl1_ego.csv")
+```
+
+### KEGG enrichment - mirDB, cluster 1
+
+```{r}
+mirdb_cl1_target_genes_entrez <- na.omit(ensembl_genes[ensembl_genes$gene_id %in% cl1_target_genes, ]$entrezgene_id)
+
+#head(mirdb_cl1_target_genes_entrez)
+length(mirdb_cl1_target_genes_entrez)
+```
+
+```{r}
+#| label: fig-mirdb-cl1-kegg
+#| fig-cap: "KEGG enrichment, cluster 1"
+
+mirdb_cl1_ekegg = enrich_kegg_readable(mirdb_cl1_target_genes_entrez,
+                                      title = "Cluster 1 KEGG, mirDB")
+```
+
+```{r}
+nrow(as.data.frame(mirdb_cl1_ekegg))
+```
+
+```{r}
+write.csv(mirdb_cl1_ekegg, file = "../../output/02_mirdb_cl1_ekegg.csv")
+```
+
+## Cluster 2 - mirDB
+
+
+Percent of mirs in cluster 2 that are annotated in mirdb? 
+
+```{r}
+length(mir_cl2)/length(mir_cl2 %in% mirdb_80$mir_name) * 100
+```
+
+Brilliant - they're all there!
+
+```{r}
+# check number of targets for each miRNA
+
+cl2_distribution <- mirdb_80  %>% 
+    filter(mir_name %in% mir_cl2)  %>% 
+    dplyr::select(mir_name, target_id)  %>% 
+    distinct()  %>% 
+    group_by(mir_name)  %>% 
+    summarize(n = n())  %>% 
+    arrange(desc(n))  %>% 
+    slice_head(n = 10)
+
+summary(cl2_distribution$n)
+#hist(cl2_distribution$n)
+```
+
+Wow. The smallest number of mRNA targets for one miRNA is 253. I find that very hard to believe. 
+
+
+### GO enrichment - mirDB, cluster 2
+
+```{r}
+cl2_target_genes <- mirdb_80  %>% 
+    filter(mir_name %in% mir_cl2)  %>% 
+    distinct(target_id)  %>% 
+    pull()
+
+length(cl2_target_genes)
+```
+
+```{r}
+#| cache: true
+#| label: fig-mirdb-cl2-ego
+#| fig-cap: "GO enrichment, mirDB, cluster 2"
+
+
+options(repr.plot.height = 6, repr.plot.width = 10)
+
+mirdb_cl2_ego <- plotEGO(cl2_target_genes, 
+                   universe = mirdb_80$target_id, 
+                   title = "Cluster 2 GO, mirDB")
+```
+
+```{r}
+# How many enrichments do we have? 
+
+dim(mirdb_cl2_ego)
+```
+
+```{r}
+# export it to a csv file
+
+write.csv(mirdb_cl2_ego, file = "../../output/02_mirdb_cl2_ego.csv")
+```
+
+### KEGG enrichment - mirDB, cluster 2
+
+```{r}
+mirdb_cl2_target_genes_entrez <- na.omit(ensembl_genes[ensembl_genes$gene_id %in% cl2_target_genes, ]$entrezgene_id)
+
+#head(mirdb_cl2_target_genes_entrez)
+length(mirdb_cl2_target_genes_entrez)
+```
+
+```{r}
+#| label: fig-mirdb-cl2-kegg
+#| fig-cap: "KEGG enrichment, cluster 2"
+
+mirdb_cl2_ekegg = enrich_kegg_readable(mirdb_cl2_target_genes_entrez,
+                                      title = "Cluster 2 KEGG, mirDB")
+```
+
+```{r}
+nrow(as.data.frame(mirdb_cl2_ekegg))
+```
+
+```{r}
+write.csv(mirdb_cl2_ekegg, file = "../../output/02_mirdb_cl2_ekegg.csv")
+```
+
+# miRNAs of interest
+
+In this section, we take a closer look at the miRNAs of interest that were provided to us. Specifically, we're interested in these questions: 
+
+- How are they differentially expressed? Do they all go up or down in damaged exosomes? 
+- How do their counts look like? 
+
+```{r}
+interesting <- c("mmu-miR-18a-5p", "mmu-miR-1949", "mmu-miR-486b-5p",
+                "mmu-miR-3470a", "mmu-miR-199b-3p", "mmu-miR-301a-5p",
+                "mmu-miR-669l-5p", "mmu-miR-497a-5p", "mmu-miR-7a-5p",
+                "mmu-miR-322-5p", "mmu-miR-652-5p", "mmu-miR-148b-3p",
+                "mmu-miR-297c-5p", "mmu-miR-669b-5p", "mmu-miR-669d-5p",
+                "mmu-miR-669o-5p", "mmu-miR-15b-5p", "mmu-miR-350-5p", 
+                "mmu-miR-7689-3p", "mmu-miR-25-3p", "mmu-miR-709",
+                "mmu-miR-199a-3p")
+
+# Sort in increasing numerical order
+interesting <- interesting[order(interesting)]
+
+length(interesting)
+```
+
+How many of these 22 miRNAs are differentially expressed? 
+
+```{r}
+nrow(rld_z_plot[rownames(rld_z_plot) %in% interesting, ]) 
+```
+
+Okay, 8 of them aren't in there. What are they? 
+
+```{r}
+interesting[!interesting %in% rownames(rld_z_plot)]
+```
+
+Are they in the original non-filtered counts? 
+
+
+
+```{r}
+# Get counts
+counts_unfilt <- counts(dds, normalized = TRUE)
+
+rownames(counts_unfilt) <- mmu.gff$Name[match(rownames(counts_unfilt), mmu.gff$ID)]
+
+# How many interesting miRNAs are not in the original counts_unfilt
+interesting[!interesting %in% rownames(counts_unfilt)]
+```
+
+Examining original counts: 
+
+```{r}
+# Keep only rows of interest
+interesting_counts <- counts_unfilt[rownames(counts_unfilt) %in% interesting, ]
+interesting_counts <- interesting_counts[order(rownames(interesting_counts)), ]
+
+# Round to integer so it's easier to read
+interesting_counts = apply(round(interesting_counts), c(1,2), as.integer)
+
+interesting_counts
+```
+
+```{r}
+# Order by descending average counts across all samples
+interesting_counts_df <- as.data.frame(interesting_counts)
+interesting_counts_df$avg_read_counts = rowMeans(interesting_counts_df)
+interesting_counts_df[order(desc(interesting_counts_df$avg_read_counts)), ]
+```
+
+```{r}
+# How many rows
+nrow(counts_unfilt[rownames(counts_unfilt) %in% interesting, ])
+```
+
+All 22 miRNAs are in the original read counts. The 8 miRNAs that aren't in `rld_z_plot` have been filtered out due to low read counts (see the last 8)
+
+```{r}
+#| label: fig-int-heatmap
+#| fig-cap: "Heatmap, miRNAs of interest"
+
+options(repr.plot.height = 6, repr.plot.width = 8)
+
+z_toplot <- rld_z_plot[rownames(rld_z_plot) %in% interesting, ]
+
+make_heatmap(z_toplot, rownames(z_toplot), title = "miRNAs of interest")
+```
+
+All the miRNAs of interest go down in damaged exosomes. 
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+# sigDE miRNAs in Hippo signalling
+
+Which miRNAs are differentially expressed and are involved in Hippo signalling? 
+
+We use mirDB at a cutoff of 80 (as above). 
+
+We download the Hippo signalling terms from [MGI](http://www.informatics.jax.org/go/term/GO:0035329), and read them in here:
+
+```{r}
+hippo_go <- read_xlsx("../../data/annotations/GO_hippo_signalling.xlsx")
+
+head(hippo_go)
+```
+
+```{r}
+# Percent of annotated symbols?
+
+length(hippo_go$Symbol)/length(hippo_go$Symbol %in% mirdb_80$target_name)*100
+```
+
+Yup, they are.
+
+
+Taking a look at our significantly differentially expressed miRNAs: 
+
+```{r}
+head(signif_results)
+```
+
+We want miRNAs that are significantlly differentially expressed, with targets involved in the hippo signalling pathway. 
+
+```{r}
+sigde_hippo_mirs <- mirdb_80 %>% 
+    dplyr::select(mir_id, mir_name, target_id, target_name, mirdb_score)  %>% 
+    
+    # Significantly DE miRNAs
+    filter(mir_id %in% signif_results$ID)  %>% 
+    # Target ids in hippo
+    filter(target_name %in% hippo_go$Symbol)  %>% 
+    
+    # Sort 
+    group_by(mir_name, target_name)  %>% 
+    arrange(mir_name, target_name)  %>% 
+    distinct()  %>% 
+    
+    # Join with signif_results 
+    left_join(signif_results, by = c("mir_id" = "ID"))  %>% 
+    left_join(hippo_go, by = c("target_name" = "Symbol"))  %>% 
+
+    # Select columns that we need
+    rename("go_term" = `Annotated Term`,
+          "chromosome" = "Chromosome",
+          "strand" = "Strand",
+          "derivation" = "Derivation") %>% 
+    dplyr::select(mir_id, mir_name, chromosome, 
+                  strand, derivation,
+                  baseMean, log2FoldChange,
+                  pvalue, padj, 
+                  target_id, target_name, 
+                  mirdb_score, go_term)  %>% 
+
+    # Sort by mir_id, remove any duplicated rows
+    arrange(mir_id)  %>% 
+    ungroup() %>% 
+    distinct()
+
+dim(sigde_hippo_mirs)
+
+head(sigde_hippo_mirs)
+```
+
+```{r}
+write_csv(sigde_hippo_mirs, file = "../../output/02_sigde_hippo_mirs.csv")
+```
+
+## Gscore ranking
+
+Just for fun: Let's do a G score calculation to help us prioritize miRNAs with high base means and high log2FoldChanges. 
+
+- G score = baseMean * abs_log2FC
+- filter for miRNA abs_log2FoldChange > 1.5
+
+```{r}
+sigde_hippo_mirs_gscores <- sigde_hippo_mirs  %>% 
+
+    # Filter for absolute log2FC > 1.5
+    mutate(abs_log2FoldChange = abs(log2FoldChange))  %>% 
+    filter(abs_log2FoldChange > 1.5)  %>% 
+    distinct()  %>% 
+
+    # Calculate G score
+    mutate(G_score = baseMean * abs_log2FoldChange)  %>% 
+    arrange(desc(G_score))  %>% 
+    dplyr::select(mir_id, mir_name, chromosome, strand,
+                 derivation, baseMean, 
+                  log2FoldChange, abs_log2FoldChange,
+                 pvalue, padj, G_score,
+                 target_id, target_name, mirdb_score, go_term)
+
+sigde_hippo_mirs_gscores
+```
+
+```{r}
+write_csv(sigde_hippo_mirs_gscores, file = "../../output/02_sigde_hippo_mirs_gscores.csv")
+```
+
+# Discussion
+
+<!-- #region -->
+**TODO**
+- apply a filter to only keep enrichments with certain number of counts? 
+
+**Resolved issues**
+
+- to run again wth unfiltered counts/ lower the filtering threshold to 5?
+    - Answer: filter of 10 is okay. 
+- enrichGO returns way too many terms, even when I set the universe to only contain targetscan genes. To somehow filter miRNAs based on number of targets? Prioritize the targets in some way? 
+- tried using mirTarBase (contains experimentally validated miRNA-mRNA targets). We have fewer targets now, but the same issues still arise - there's a lot of GO terms and pathways. 
+- change kegg entrez ids to gene symbols (`setReadable` works wonders)
+
+
+A large issue is the fact that we don't have a background to filter against - unless we select a muscle mRNA dataset? 
+<!-- #endregion -->
+
+```{r}
+sessionInfo()
+```
+
+```{r}
+
+```

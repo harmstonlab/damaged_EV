@@ -1,0 +1,701 @@
+---
+title: "01_QualityControl"
+format: gfm
+code-fold: true
+---
+
+# Introduction
+
+
+In this notebook, we perform quality control on a micro-RNA seq dataset from damaged muscles exosomes and normal muscle exosomes in mice. The conditions are summarized below: 
+
+
+RNA-seq label| Long label
+--|-----
+ctrl_1 | muscle_exosome_1  
+ctrl_2 | muscle_exosome_2 
+damaged_1 | damaged_muscle_exosome_1 
+damaged_2 | damaged_muscle_exosome_2 
+
+
+# Setup
+
+```{r}
+# Load libraries
+
+suppressPackageStartupMessages({
+    library(targetscan.Mm.eg.db)
+    library(DESeq2)
+    library(ggplot2)
+    library(dplyr)
+    library(DT)
+    library(pheatmap)
+    library(clusterProfiler)
+    library("org.Mm.eg.db")
+    library(tidyverse)
+})
+```
+
+We create gene-level annotations for miRNAs in the mouse genome:
+
+<!-- #region -->
+```{r, eval=FALSE}
+mmu.gff = read.delim("/Users/qh_tan/qianhui/damagedmuscle/data/refseq/mmu.gff3", 
+                     header = FALSE, sep = "\t",
+                     skip = 13 # skip the comments
+                    )
+
+
+# Generate necessary column names
+colmn <- paste("col", 1:4)
+
+mmu.gff <-
+   tidyr::separate(
+     data = mmu.gff,
+     col = V9,
+     sep = ";",
+     into = colmn,
+     remove = TRUE
+   )
+ 
+
+# Remove the columns with . 
+mmu.gff = mmu.gff[ ,-c(2, 6, 8)]
+
+colnames(mmu.gff) = c("Chromosome","Type","Start","End","Strand","ID", "Alias","Name","Derivation")
+mmu.gff$ID <- gsub("ID=","",mmu.gff$ID)
+mmu.gff$Alias <- gsub("Alias=","",mmu.gff$Alias)
+mmu.gff$Name <- gsub("Name=","",mmu.gff$Name)
+mmu.gff$Derivation <- gsub("Derives_from=","",mmu.gff$Derivation)
+
+write.csv(mmu.gff,
+          file = "/Users/qh_tan/qianhui/damagedmuscle/output/mmu_gff.csv")
+
+head(mmu.gff)
+```
+<!-- #endregion -->
+
+```{r}
+mmu.gff <- read.csv("../../output/mmu_gff.csv")
+
+head(mmu.gff)
+```
+
+## Metadata wrangling
+
+We wrangle the factors and samples so the plots will be displayed in the correct order:
+
+```{r}
+metadata <- read.delim("../../data/metadata/metadata.csv",
+                       sep = ",", 
+                       blank.lines.skip = TRUE,
+                       stringsAsFactors = TRUE,
+                       header = TRUE)
+
+metadata <- na.omit(metadata)
+
+# Wrangle such that plots will display correctly
+metadata$batch <- factor(metadata$batch, levels = c(1, 2))
+metadata$condition <- factor(metadata$condition, 
+                             levels = c("control", "damaged"))
+
+
+head(metadata)
+```
+
+## Creating the data matrix
+
+
+`featureCounts` conveniently gives us our data in a well-organized matrix, so we just read it in and subset our columns of interest:
+
+```{r}
+# Read in data
+counts <- read.delim(file = "../../data/02_data_processed/04_featurecounts/bwa_counts.txt",
+                 skip = 1)
+
+# Rename 
+colnames(counts) <- c("Geneid", "Chr", "Start", "End",
+                     "Strand", "Length", 
+                      "damaged_1", "damaged_2",
+                     "control_1", "control_2")
+
+head(counts)
+```
+
+```{r}
+# Keep only columns that we want (ie the columns with read counts)
+
+keep = c("control_1", "control_2", "damaged_1", "damaged_2")
+
+data = as.matrix(counts[, keep])
+rownames(data) = counts$Geneid
+
+head(data)
+```
+
+```{r}
+nrow(data)
+```
+
+Some MIMATs are duplicated (eg MIMAT00001_1, MIMAT00001_2), indicating that they code for the same miRNA, but map to different parts of the genome. Since we're dealing with exosomes here, we don't need to care about which part of the genome they're from - we only care about the final miRNA that is produced. 
+
+So we go ahead and merge all the MIMATs with the same name together: 
+
+```{r}
+# Split and remove the trailing _1 and _2
+
+data_df <- as.data.frame(data)
+data_df$ID <- rownames(data_df)
+
+data_df <- data_df  %>% 
+    as_tibble()  %>% 
+    dplyr::select(ID, everything()) %>% 
+    separate(ID, sep = "_", into = c("ID", "sub"))
+             
+head(data_df)
+```
+
+```{r}
+# How many are duplicated? 
+
+sum(duplicated(data_df$ID))
+```
+
+144 MIMATs have similar IDs. We go ahead and merge them: 
+
+```{r}
+# Merge counts for MIMATs with same ID
+data_df_merged <- data_df  %>% 
+    dplyr::select(-c(sub))  %>% 
+    group_by(ID)  %>% 
+    summarize(control_1 = sum(control_1),
+          control_2 = sum(control_2),
+          damaged_1 = sum(damaged_1), 
+          damaged_2 = sum(damaged_2))
+
+
+# Convert back to matrix
+data_mat <- as.matrix(data_df_merged[, -1 ])
+rownames(data_mat) <- data_df_merged$ID
+```
+
+```{r}
+# How many rows do we have now? 
+nrow(data_mat)
+```
+
+```{r}
+# Check that we have no more duplicates
+
+sum(duplicated(rownames(data_mat)))
+```
+
+As DESeq requires read counts to be integers, we round all counts to the nearest integer:
+
+```{r}
+data_mat = apply(round(data_mat), c(1,2), as.integer)
+```
+
+```{r}
+nrow(data_mat)
+```
+
+```{r}
+# Remove all rows with non zero counts
+data_mat_nonzero = data_mat[rowSums(data_mat) > 0, ]
+
+head(data_mat_nonzero)
+```
+
+```{r}
+nrow(data_mat) # Total number of annotated miRNAs in mice
+```
+
+```{r}
+nrow(data_mat_nonzero) # Number of detected miRNAs
+```
+
+```{r}
+(nrow(data_mat_nonzero)/nrow(data_mat))*100
+```
+
+Wow. Only 45% of detected miRNAs have non-zero counts across all samples. 
+
+
+# DESeq with default
+
+Technically, we can run DESeq with the replicates included in the `design` parameter as a form of batch correction. However, here we run it without batch correction first to see how our data looks.
+
+```{r}
+# Creating the DESeq object
+dds = DESeqDataSetFromMatrix(countData = data_mat_nonzero, 
+                             colData = metadata,
+                             design = ~ condition)
+
+colnames(dds) = colnames(data_mat_nonzero)
+
+dds <- estimateSizeFactors(dds)
+dds <- estimateDispersions(dds)
+
+rld <- rlog(dds)
+```
+
+## DESeq QC
+
+We perform 3 types of Quality Control to assess our DESeq dataset: 
+
+- Correlation matrix heatmap
+- Size factors
+- Dispersion estimate plots
+
+```{r}
+#| label: fig-qc-corclust-heatmap
+#| fig-cap: "Heatmap of correlation matrix"
+
+options(repr.plot.width = 6, repr.plot.height = 6)
+
+### Extract the vst matrix from the object
+rld_mat <- assay(rld)  
+
+### Compute pairwise correlation values
+rld_cor <- cor(rld_mat)
+
+### Plot heatmap
+pheatmap(rld_cor, main = "Correlation heatmap, before filtering")
+```
+
+This looks good - the conditions cluster together. 
+
+
+We check the size factors and dispersion estimates next. Size factors should be around 1, while the dispersion estimate graph should show a decreased dispersion as the mean increases. 
+
+```{r}
+# Check size factors used to normalize count data 
+summary(sizeFactors(dds))
+```
+
+```{r}
+#| label: fig-qc-dispersion-estimate
+#| fig-cap: "Dispersion estimates"
+
+## Plot dispersion estimates
+
+options(repr.plot.height = 6, repr.plot.width = 8)
+
+plotDispEsts(dds, main = "Dispersion estimates, before filtering")
+```
+
+The size factors and dispersion estimates both look good.
+
+
+# PCA - pre-filtering
+
+```{r}
+#| label: fig-qc-pca
+#| fig-cap: PCA, pre-filtering
+
+# Calculations
+ntop = 500
+rv <- rowVars(assay(rld))
+select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, length(rv)))]
+pca = prcomp(t(assay(rld)[select,]))
+percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+pca_data <- plotPCA(rld, intgroup = c("condition"), returnData=TRUE)
+
+percentVar <- round(100 * attr(pca_data, "percentVar"), digits=2)
+
+ggplot(pca_data, aes(PC1, PC2, color=condition)) + 
+    geom_point(size=2) +
+    scale_x_continuous(paste0("PC1: ",percentVar[1],"% variance"),
+                      limits = c(-10, 10),
+                      breaks = c(-10, -5, 0, 5, 10)) +
+    scale_y_continuous(paste0("PC2: ",percentVar[2],"% variance"),
+                      limits = c(-4, 4),
+                      breaks = c(-4, -2, 0, 2, 4)) + 
+    coord_fixed() + 
+    theme_classic() + 
+    geom_text(data = pca_data, aes(PC1,PC2, label = name), hjust = 1.1) +
+    labs(title = "PCA graph, pre-filtering")
+
+```
+
+That looks reassuring. `PC1` accounts for most of the variance, and separates both sample groups. PC2 accounts for 13.33% variance, and accounts for batch-specific variance. 
+
+
+## Hierarchical clustering
+
+```{r}
+#| label: fig-qc-hclust
+#| fig-cap: Hierarchical clustering, pre-filtering
+
+sampleDists <- dist(t(assay(rld)))
+plot(hclust(sampleDists))
+```
+
+Nice! These separate beautifully. 
+
+
+# QC - number of detected genes
+
+
+Examining our dataset:
+
+```{r}
+dds
+```
+
+## Read counts per sample
+
+```{r}
+total_counts <- as.data.frame(colSums(counts(dds)))
+
+colnames(total_counts) <- "total_counts"
+total_counts$name = rownames(total_counts)
+total_counts$name = factor(total_counts$name, rev(metadata$label))
+
+total_counts
+```
+
+```{r}
+#| label: fig-qc-total-counts-per-sample
+#| fig-cap: Total counts per sample
+
+options(repr.plot.height = 7, repr.plot.width = 7)
+
+# Plot
+ggplot(total_counts, aes(x = name, y = total_counts)) +
+    geom_bar(stat = "identity") +
+    scale_y_continuous("Read counts", 
+                       limits = c(0, 10000000),
+                       breaks = seq(0, 10000000, 1000000)) +
+    geom_hline(yintercept = 12000, color = "blue", linetype = "dashed") +
+    labs(title = "Read counts per sample",
+         x = element_blank()) +
+    theme_minimal() +
+    coord_flip()
+```
+
+Control_1 has an unusually low number of total read counts. 
+
+
+## Number of genes detected per sample
+
+
+### Calculations
+
+```{r}
+# Calculations
+detected = apply(counts(dds), 2, function(col) sum(col > 0))
+detected = as.data.frame(detected)
+detected$name = row.names(detected)
+detected$name = factor(detected$name, rev(metadata$label))
+                 
+detected
+```
+
+### Plot
+
+```{r}
+#| label: fig-qc-ngenes-per-sample
+#| fig-cap: Number of genes detected per sample
+
+options(repr.plot.height = 7, repr.plot.width = 7)
+
+# Plot
+ggplot(detected, aes(x = name, y = detected)) +
+    geom_bar(stat = "identity") +
+    scale_y_continuous("# Genes detected", 
+                       limits = c(0, 1000),
+                       breaks = seq(0, 1000, 100),
+                       labels = scales::comma) +
+    geom_hline(yintercept = 12000, color = "blue", linetype = "dashed") +
+    labs(title = "Number of genes detected per sample",
+         x = element_blank()) +
+    theme_minimal() +
+    coord_flip()
+```
+
+```{r}
+summary(detected$detected)
+```
+
+```{r}
+detected$detected / nrow(mmu.gff[mmu.gff$Type == "miRNA",]) * 100
+```
+
+About 30 - 35% of miRNA genes have detectable expression levels. 
+
+
+## Size factors
+
+```{r}
+#| label: fig-qc-sizefactors
+#| fig-cap: Size factors per sample
+
+print(sizeFactors(dds))
+
+df = data.frame(sample_id = names(sizeFactors(dds)), 
+                sizeFactors = sizeFactors(dds))
+
+
+ggplot(df, aes(x = sample_id, y=sizeFactors)) + 
+    geom_bar(stat="identity") + 
+    scale_y_continuous(limits=c(0,2), expand=c(0,0)) + 
+    labs(title = "Size factors for each sample",
+         x = element_blank()) +
+    theme_minimal() + 
+    theme(axis.text.x = element_text(angle = 45, hjust=1, 
+                                     colour="black", size= 12))
+```
+
+Hmm. Control_1 looks like an outlier here - it has an unusually low size factor. 
+
+
+# Filtering
+
+Before we proceed with the remaining analysis, we filter out lowly expressed genes. 
+
+First, we take a look at the gene distribution:
+
+```{r}
+summary(counts(dds))
+```
+
+```{r}
+summary(counts(dds, normalized = TRUE))
+```
+
+Intesting. 75% of all genes have read counts less than 150, which is to be expected with miRNAs. 
+
+We have a few outliers that are extremely highly expressed. Let's find out what they are:
+
+```{r}
+foo <- as.data.frame(counts(dds, normalized = TRUE))
+
+foo$average = rowMeans(foo)
+
+foo <- foo[order(desc(foo$average)), ]
+
+head(foo, n = 10)
+```
+
+```{r}
+#| label: fig-boxplot-gene-counts
+#| fig-cap: Boxplot of ene counts per sample
+
+boxplot(counts(dds, normalized = TRUE), 
+       main = "Gene counts per sample ")
+```
+
+```{r}
+#| label: fig-HIST-gene-counts
+#| fig-cap: Histogram of gene counts per sample
+
+hist(counts(dds, normalized = TRUE), 
+     main = "Gene counts per sample ")
+```
+
+We proceed with the filtering:
+
+```{r}
+filter = apply(counts(dds, normalized = TRUE), 1, function(x){ mean(x) >= 10 }) 
+dds_filt = dds[filter, ]
+dds_filt = estimateSizeFactors(dds_filt)
+dds_filt = estimateDispersions(dds_filt)
+
+rld_filt = rlog(dds_filt)
+```
+
+```{r}
+# How many genes did we remove? 
+
+nrow(dds) # pre-filtering
+nrow(dds_filt) # after filtering
+```
+
+Wow. We removed 400 genes - literally, half. Which is to be expected, I guess, since we took the median.
+
+**TODO**: re-run analysis without filtering out lowly expressed genes?
+
+
+## Read counts per sample
+
+```{r}
+#| label: fig-filt-total-counts-per-sample
+#| fig-cap: Total counts per sample, after filtering
+
+total_counts <- as.data.frame(colSums(counts(dds_filt)))
+
+colnames(total_counts) <- "total_counts"
+total_counts$name = rownames(total_counts)
+total_counts$name = factor(total_counts$name, rev(metadata$label))
+
+total_counts
+
+
+options(repr.plot.height = 7, repr.plot.width = 7)
+
+# Plot
+ggplot(total_counts, aes(x = name, y = total_counts)) +
+    geom_bar(stat = "identity") +
+    scale_y_continuous("Read counts", 
+                       limits = c(0, 10000000),
+                       breaks = seq(0, 10000000, 1000000)) +
+    geom_hline(yintercept = 12000, color = "blue", linetype = "dashed") +
+    labs(title = "Read counts per sample, after filtering",
+         x = element_blank()) +
+    theme_minimal() +
+    coord_flip()
+
+```
+
+## Number of genes per sample
+
+```{r}
+#| label: fig-filt-ngenes-per-sample
+#| fig-cap: Number of genes detected per sample, filtered
+
+#Calculations
+
+detected = apply(counts(dds_filt), 2, function(col) sum(col > 0))
+detected = as.data.frame(detected)
+detected$name = row.names(detected)
+detected$name = factor(detected$name, rev(metadata$label))
+                 
+detected
+                 
+
+
+options(repr.plot.height = 7, repr.plot.width = 7)
+
+# Plot
+ggplot(detected, aes(x = name, y = detected)) +
+    geom_bar(stat = "identity") +
+    scale_y_continuous("# Genes detected", 
+                       limits = c(0, 1000),
+                       breaks = seq(0, 1000, 100),
+                       labels = scales::comma) +
+    labs(title = "Number of genes detected per sample, after filtering",
+         x = element_blank()) +
+    theme_minimal() +
+    coord_flip()
+```
+
+Alright, that dropped by quite a bit - all samples have almost the same amount of genes now! 
+
+
+## Size factors
+
+```{r}
+#| label: fig-filt-sizefactors
+#| fig-cap: Size factors per sample, filtered
+
+print(sizeFactors(dds_filt))
+
+df = data.frame(sample_id = names(sizeFactors(dds_filt)), 
+                sizeFactors = sizeFactors(dds_filt))
+
+
+ggplot(df, aes(x = sample_id, y = sizeFactors)) + 
+    geom_bar(stat="identity") + 
+    scale_y_continuous(limits=c(0,2), expand=c(0,0)) + 
+    labs(title = "Size factors for each sample, after filtering",
+         x = element_blank()) +
+    theme_minimal() + 
+    theme(axis.text.x = element_text(angle = 45, hjust=1, 
+                                     colour="black", size= 12))
+```
+
+Unsurprisingly, we still see the size factor disparity. 
+
+
+## Hierarchical clustering
+
+We perform hierarchical clustering to see how closely related each sample is to other samples. Replicates of the same condition should cluster together.
+
+```{r}
+#| label: fig_hclust
+#| fig-cap: "Hierarchical clustering"
+
+options(repr.plot.height = 6, repr.plot.width = 12)
+
+sampleDists <- dist(t(assay(rld_filt)))
+
+plot(hclust(sampleDists),
+                        main = "Cluster Dendogram, filtered")
+```
+
+## PCA graph
+
+Let's look at the PCA graph to see if the same patterns hold: 
+
+```{r}
+#| label: fig-filt-pca
+#| fig-cap: PCA, filtered
+
+# Calculations
+ntop = 500
+rv <- rowVars(assay(rld_filt))
+select <- order(rv, decreasing = TRUE)[seq_len(min(ntop, length(rv)))]
+pca = prcomp(t(assay(rld)[select,]))
+percentVar <- pca$sdev^2/sum(pca$sdev^2)
+
+pca_data <- plotPCA(rld_filt, intgroup = c("condition"), returnData=TRUE)
+
+percentVar <- round(100 * attr(pca_data, "percentVar"), digits=2)
+
+ggplot(pca_data, aes(PC1, PC2, color=condition)) + 
+    geom_point(size=2) +
+    scale_x_continuous(paste0("PC1: ",percentVar[1],"% variance"),
+                      limits = c(-5, 5),
+                      breaks = c(-5, 0, 5)) +
+    scale_y_continuous(paste0("PC2: ",percentVar[2],"% variance"),
+                      limits = c(-2, 2),
+                      breaks = c(-2, 0, 2)) + 
+    coord_fixed() + 
+    theme_classic() + 
+    geom_text(data = pca_data, aes(PC1,PC2, label = name), hjust = 1.1) +
+    labs(title = "PCA graph, filtered")
+```
+
+Okay, so variance on both PCs has gone down slightly. However, nothing much has changed - possibly suggesting that we can afford to not filter since these are miRNAs that are lowly expressed anyway. 
+
+<!-- #region -->
+# Discussion
+
+**Some quick stats**
+- 2110 miRNAs detected
+- 1966 non-duplicated miRNAs
+- 897 non-zero miRNAs
+- 448 miRNAs with read counts > 10 
+
+**Things that are good**
+- PCA, hierarchical clustering all behave as expected
+- number of genes per sample looks goood
+
+
+**Things that need to be checked out**
+- control_1 has very low read counts - to check this out? 
+- try DESeq without filtering lowly expressed genes?
+<!-- #endregion -->
+
+# Export RDS files
+
+```{r}
+saveRDS(data_mat, file = "../../output/01_data_mat.RDS")
+saveRDS(data_mat_nonzero, file = "../../output/01_data_mat_nonzero.RDS")
+saveRDS(metadata, file = "../../output/01_metadata.RDS")
+```
+
+# sessionInfo
+
+```{r}
+#| code-fold: false
+
+sessionInfo()
+```
+
+```{r}
+
+```

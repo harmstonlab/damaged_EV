@@ -1,0 +1,1 @@
+Contains bash scripts used to preprocess raw RNA-seq reads.

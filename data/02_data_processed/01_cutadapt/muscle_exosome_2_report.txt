@@ -1,0 +1,93 @@
+This is cutadapt 2.4 with Python 3.4.10
+Command line parameters: -g XGAACGACATGGCTACGATCCGACTT -a AGTCGGAGGCCAAGCGGTCTTAGGAAGACAAX -o /home/qianhui/damagedmuscle_project/data/02_data_processed/01_cutadapt/muscle_exosome_2_trimmed.fq.gz /home/qianhui/damagedmuscle_project/data/01_data_raw/muscle_exosome_2.fq.gz --info-file /home/qianhui/damagedmuscle_project/data/02_data_processed/01_cutadapt/muscle_exosome_2_info_file.tsv
+Processing reads on 1 core in single-end mode ...
+Finished in 786.39 s (28 us/read; 2.16 M reads/minute).
+
+=== Summary ===
+
+Total reads processed:              28,303,333
+Reads with adapters:                 1,165,954 (4.1%)
+Reads written (passing filters):    28,303,333 (100.0%)
+
+Total basepairs processed:   700,202,934 bp
+Total written (filtered):    696,268,040 bp (99.4%)
+
+=== Adapter 1 ===
+
+Sequence: AGTCGGAGGCCAAGCGGTCTTAGGAAGACAA; Type: non-internal 3'; Length: 31; Trimmed: 739699 times.
+
+No. of allowed errors:
+0-9 bp: 0; 10-19 bp: 1; 20-29 bp: 2; 30-31 bp: 3
+
+Bases preceding removed adapters:
+  A: 13.1%
+  C: 25.6%
+  G: 33.9%
+  T: 27.4%
+  none/other: 0.0%
+
+Overview of removed sequences
+length	count	expect	max.err	error counts
+3	490261	442239.6	0	490261
+4	205107	110559.9	0	205107
+5	16997	27640.0	0	16997
+6	18630	6910.0	0	18630
+7	1513	1727.5	0	1513
+8	336	431.9	0	336
+9	473	108.0	0	241 232
+10	1208	27.0	1	79 1129
+11	4199	6.7	1	102 4097
+12	213	1.7	1	52 161
+13	22	0.4	1	0 22
+14	114	0.1	1	23 91
+15	289	0.0	1	269 20
+16	14	0.0	1	2 12
+17	28	0.0	1	3 25
+18	6	0.0	1	0 6
+19	12	0.0	1	6 2 4
+20	58	0.0	2	4 28 26
+21	9	0.0	2	0 2 7
+22	5	0.0	2	0 3 2
+23	20	0.0	2	4 5 11
+24	56	0.0	2	0 39 17
+26	8	0.0	2	0 6 2
+27	7	0.0	2	0 0 7
+28	72	0.0	2	0 65 7
+29	11	0.0	2	0 5 4 2
+30	21	0.0	3	0 17 2 2
+31	6	0.0	3	0 0 6
+32	3	0.0	3	0 3
+33	1	0.0	3	0 0 0 1
+
+
+=== Adapter 2 ===
+
+Sequence: GAACGACATGGCTACGATCCGACTT; Type: non-internal 5'; Length: 25; Trimmed: 426255 times.
+
+No. of allowed errors:
+0-9 bp: 0; 10-19 bp: 1; 20-25 bp: 2
+
+Overview of removed sequences
+length	count	expect	max.err	error counts
+3	372182	442239.6	0	372182
+4	44578	110559.9	0	44578
+5	6642	27640.0	0	6642
+6	631	6910.0	0	631
+7	573	1727.5	0	573
+8	283	431.9	0	283
+9	285	108.0	0	208 77
+10	293	27.0	1	160 133
+11	329	6.7	1	131 198
+12	92	1.7	1	69 23
+13	35	0.4	1	0 35
+14	51	0.1	1	22 29
+15	77	0.0	1	64 13
+16	57	0.0	1	48 9
+17	32	0.0	1	24 8
+18	16	0.0	1	7 9
+19	60	0.0	1	43 17
+20	20	0.0	2	0 18 2
+21	12	0.0	2	0 4 8
+22	5	0.0	2	0 0 5
+23	1	0.0	2	0 1
+24	1	0.0	2	0 0 1

@@ -1,0 +1,7 @@
+project:
+  title: "new_project"
+
+toc: true
+number-sections: true
+  
+format: gfm
